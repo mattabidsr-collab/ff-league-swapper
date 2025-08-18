@@ -1,0 +1,24 @@
+{
+  "league_name": "Jungle of Nool",
+  "num_teams": 12,
+  "scoring": {
+    "ppr": 0.5,
+    "pass_td": 4,
+    "rush_td": 6
+  },
+  "roster_slots": {
+    "QB": 1,
+    "RB": 2,
+    "WR": 2,
+    "TE": 0,
+    "FLEX": 2,
+    "DST": 1,
+    "K": 1,
+    "BENCH": 4
+  },
+  "flex_eligible": [
+    "RB",
+    "WR",
+    "TE"
+  ]
+}
