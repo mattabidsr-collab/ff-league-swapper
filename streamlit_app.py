@@ -1,5 +1,18 @@
 import streamlit as st
 import pandas as pd
+from espn_api.football import League
+
+# pull values from Streamlit secrets
+espn_s2 = st.secrets["espn_s2"]
+swid = st.secrets["swid"]
+
+# choose which league to use (example: League 1)
+league_id = int(st.secrets["league_id_1"])
+year = int(st.secrets["league_year_1"])
+team_id = int(st.secrets["league_team_id_1"])
+
+# now you can initialize the ESPN League object
+league = League(league_id=league_id, year=year, espn_s2=espn_s2, swid=swid)
 from modules.loaders import load_league_rules_files, load_csv_or_default, standardize_players
 from modules.models import LeagueRules, LeagueState
 from modules.draft import best_available
