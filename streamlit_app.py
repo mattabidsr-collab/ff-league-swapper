@@ -100,6 +100,30 @@ with right:
     st.write("")
     st.metric("Players drafted (this session)", len(lst.drafted))
 
+# === Cheatsheet PDF -> Master CSV ===
+st.header("Import Cheat Sheets (PDF) → Master Players CSV")
+top_pdf = st.file_uploader("Upload Top 300 PPR PDF", type=["pdf"], key="pdf_top300")
+beg_pdf = st.file_uploader("Upload Beginner's PPR PDF", type=["pdf"], key="pdf_beg")
+
+if st.button("Parse & Combine PDFs"):
+    if not top_pdf or not beg_pdf:
+        st.warning("Please upload both PDFs first.")
+    else:
+        import tempfile, os
+        tpath = os.path.join(tempfile.gettempdir(), "top300.pdf")
+        with open(tpath, "wb") as f:
+            f.write(top_pdf.getbuffer())
+        top_df = parse_cheatsheet_pdf(tpath, assume_has_value=True)
+
+        bpath = os.path.join(tempfile.gettempdir(), "beg.pdf")
+        with open(bpath, "wb") as f:
+            f.write(beg_pdf.getbuffer())
+        beg_df = parse_cheatsheet_pdf(bpath, assume_has_value=False)
+
+        master = merge_and_dedupe(top_df, beg_df)
+        st.success(f"Parsed Top300: {len(top_df)} rows, Beginner: {len(beg_df)} rows. Combined: {len(master)} rows.")
+        st.dataframe(master.head(50), use_container_width=True, hide_index=True)
+        st.download_button("Download master_players.csv", master.to_csv(index=False), "master_players.csv", "text/csv")
 # --- Tabs ---
 tab_draft, tab_waiver, tab_lineup, tab_trade, tab_settings = st.tabs(
     ["Draft Board", "Waiver Wire", "Lineup Optimizer", "Trade Evaluator", "Settings & Data"]
