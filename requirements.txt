@@ -1,6 +1,7 @@
 streamlit>=1.35
 pandas>=2.0
 numpy>=1.24
+pdfplumber>=0.11.4
 espn-api>=0.44.2
 openpyxl>=3.1.2   # only needed if you want Excel export
 xlsxwriter>=3.2.0 # optional; nicer Excel output
