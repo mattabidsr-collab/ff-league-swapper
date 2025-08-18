@@ -20,8 +20,44 @@ from modules.lineup import optimize_lineup
 from modules.waiver import waiver_candidates, bye_conflicts
 from modules.trade import evaluate_trade
 from modules.utils import load_league_state, save_league_state
+from modules.cheatsheet_parser import parse_cheatsheet_pdf, merge_and_dedupe
+st.set_page_config(page_title="FF Multi-League Helper", layout="wide")
 
 st.set_page_config(page_title="FF Multi-League Helper", layout="wide")
+# === Cheatsheet PDF -> Master CSV ===
+st.header("Import Cheat Sheets (PDF) → Master Players CSV")
+top_pdf = st.file_uploader("Upload Top 300 PPR PDF", type=["pdf"], key="pdf_top300")
+beg_pdf = st.file_uploader("Upload Beginner's PPR PDF", type=["pdf"], key="pdf_beg")
+
+if st.button("Parse & Combine PDFs"):
+    if not top_pdf or not beg_pdf:
+        st.warning("Please upload both PDFs first.")
+    else:
+        import tempfile, os, traceback
+        tpath = os.path.join(tempfile.gettempdir(), "top300.pdf")
+        with open(tpath, "wb") as f:
+            f.write(top_pdf.getbuffer())
+        try:
+            top_df = parse_cheatsheet_pdf(tpath, assume_has_value=True)
+        except Exception as e:
+            st.error(f"Failed to parse Top 300 PDF: {e}")
+            st.code(traceback.format_exc())
+            st.stop()
+
+        bpath = os.path.join(tempfile.gettempdir(), "beg.pdf")
+        with open(bpath, "wb") as f:
+            f.write(beg_pdf.getbuffer())
+        try:
+            beg_df = parse_cheatsheet_pdf(bpath, assume_has_value=False)
+        except Exception as e:
+            st.error(f"Failed to parse Beginner PDF: {e}")
+            st.code(traceback.format_exc())
+            st.stop()
+
+        master = merge_and_dedupe(top_df, beg_df)
+        st.success(f"Parsed Top300: {len(top_df)} rows, Beginner: {len(beg_df)} rows. Combined: {len(master)} rows.")
+        st.dataframe(master.head(50), use_container_width=True, hide_index=True)
+        st.download_button("Download master_players.csv", master.to_csv(index=False), "master_players.csv", "text/csv")
 
 # --- Sidebar: League selection & data uploads ---
 st.sidebar.title("Settings & Data")
