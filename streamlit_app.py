@@ -166,7 +166,7 @@ with tab_draft:
         use_container_width=True, hide_index=True, height=260
     )
 
-        rem = st.multiselect(
+    rem = st.multiselect(
         "Remove drafted entries",
         options=drafted_df["player"].astype(str).tolist(),
         key="rem_drafted"
