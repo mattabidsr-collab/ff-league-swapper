@@ -47,13 +47,143 @@ tab_draft, tab_waiver, tab_lineup, tab_trade = st.tabs(
 # ---------- Draft Board ----------
 with tab_draft:
     st.subheader("Draft Board")
-    if weekly_df.empty:
-        st.info("Upload Weekly Projections to populate Best Available.")
-    else:
-        for c in ["player","pos","team","proj_points"]:
-            if c not in weekly_df.columns: weekly_df[c] = pd.NA
-        best = weekly_df.sort_values("proj_points", ascending=False, na_position="last").head(50)
-        st.dataframe(best, use_container_width=True, hide_index=True)
+
+    # --- Upload full player pool (All Players) ---
+    all_players_file = st.file_uploader("Upload ALL PLAYERS CSV (ECR/master)", type=["csv"], key="all_players_csv")
+
+    # Optional: load/save drafted list to/from CSV
+    col_imp, col_exp = st.columns([1,1])
+    with col_imp:
+        drafted_import = st.file_uploader("Import drafted list (CSV)", type=["csv"], key="drafted_import_csv")
+    with col_exp:
+        pass
+
+    # Initialize session state for drafted set
+    if "drafted_set" not in st.session_state:
+        st.session_state.drafted_set = set()
+
+    # Load dataframes
+    def _read_csv(upload):
+        import pandas as pd
+        return pd.read_csv(upload) if upload else pd.DataFrame()
+
+    all_df = _read_csv(all_players_file)
+
+    # If weekly projections were uploaded, you can still use them for sorting;
+    # but 'all_df' is the driver for Best Available.
+    # Normalize column names
+    def _normalize(df):
+        if df.empty:
+            return df
+        cols = {c.lower(): c for c in df.columns}
+        # unify to canonical
+        out = df.copy()
+        # map 'name'->'player' if needed
+        if "player" not in cols and "name" in cols:
+            out["player"] = out[cols["name"]]
+        if "pos" not in cols and "position" in cols:
+            out["pos"] = out[cols["position"]]
+        # Keep common helpers if present
+        for need in ["team","bye","proj_points","rank"]:
+            if need not in out.columns and need in cols:
+                out[need] = out[cols[need]]
+        # Ensure required exist
+        for req in ["player","pos"]:
+            if req not in out.columns:
+                out[req] = pd.NA
+        # Drop rows without a player name
+        out = out.dropna(subset=["player"]).copy()
+        # Build a nice display key
+        out["key"] = out.apply(lambda r: f"{r.get('player','')} ({r.get('pos','')}, {r.get('team','')})", axis=1)
+        return out
+
+    all_df = _normalize(all_df)
+
+    # Handle drafted import
+    if drafted_import is not None:
+        imp_df = _read_csv(drafted_import)
+        if not imp_df.empty:
+            name_col = "player" if "player" in imp_df.columns else ("name" if "name" in imp_df.columns else None)
+            if name_col:
+                st.session_state.drafted_set.update(imp_df[name_col].dropna().astype(str).tolist())
+                st.success(f"Imported {len(imp_df)} drafted players.")
+
+    if all_df.empty:
+        st.info("Upload your ALL PLAYERS CSV to enable Best Available and drafting.")
+        st.stop()
+
+    # Position filter
+    pos_options = ["ALL"] + sorted([p for p in all_df["pos"].dropna().astype(str).unique()])
+    pos_choice = st.selectbox("Filter by position", pos_options, index=0)
+
+    # Choose sort: use proj_points if present else rank
+    sort_by = "proj_points" if "proj_points" in all_df.columns else ("rank" if "rank" in all_df.columns else None)
+
+    # Build Best Available by excluding drafted
+    drafted_names = st.session_state.drafted_set
+    pool = all_df[~all_df["player"].astype(str).isin(drafted_names)].copy()
+    if pos_choice != "ALL":
+        pool = pool[pool["pos"].astype(str) == pos_choice]
+
+    if sort_by and sort_by in pool.columns:
+        pool = pool.sort_values(sort_by, ascending=False if sort_by=="proj_points" else True, na_position="last")
+
+    st.markdown("**Best Available**")
+    st.dataframe(
+        pool[["player","pos","team"] + ([sort_by] if sort_by else []) + ([ "bye" ] if "bye" in pool.columns else [])].head(50),
+        use_container_width=True, hide_index=True
+    )
+
+    # --- Draft controls ---
+    st.markdown("### Mark players as drafted")
+    c1, c2 = st.columns([2,1])
+
+    # Quick pick: search & add
+    with c1:
+        # Use multiselect over remaining pool
+        add_multi = st.multiselect(
+            "Pick drafted players to add",
+            options=pool["key"].tolist(),
+            max_selections=10
+        )
+        if st.button("Add selected to drafted"):
+            to_add = pool[pool["key"].isin(add_multi)]["player"].astype(str).tolist()
+            st.session_state.drafted_set.update(to_add)
+            st.experimental_rerun()
+
+    with c2:
+        manual_name = st.text_input("Manual add (exact player name)")
+        if st.button("Add manual"):
+            if manual_name.strip():
+                st.session_state.drafted_set.add(manual_name.strip())
+                st.experimental_rerun()
+
+    # Remove drafted
+    drafted_df = all_df[all_df["player"].astype(str).isin(st.session_state.drafted_set)].copy()
+    st.markdown("### Drafted so far")
+    st.dataframe(
+        drafted_df[["player","pos","team"]].sort_values(["pos","player"]),
+        use_container_width=True, hide_index=True, height=260
+    )
+
+    rem = st.multiselect("Remove drafted entries", options=drafted_df["player"].astype(str).tolist(), key="rem_drafted")
+    col_a, col_b, col_c = st.columns([1,1,1])
+    with col_a:
+        if st.button("Remove selected"):
+            st.session_state.drafted_set.difference_update(rem)
+            st.experimental_rerun()
+    with col_b:
+        if st.button("Reset drafted list"):
+            st.session_state.drafted_set = set()
+            st.experimental_rerun()
+    with col_c:
+        # Export drafted list
+        if not drafted_df.empty:
+            st.download_button(
+                "Download drafted.csv",
+                drafted_df[["player","pos","team"]].to_csv(index=False),
+                file_name="drafted.csv",
+
 
 # ---------- Waiver Wire ----------
 with tab_waiver:
