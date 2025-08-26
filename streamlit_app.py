@@ -25,6 +25,17 @@ if st.button("Parse & Combine PDFs"):
         try: beg_df = parse_cheatsheet_pdf(bpath, assume_has_value=False)
         except Exception as e:
             st.error(f"Failed to parse Beginner PDF: {e}"); st.code(traceback.format_exc()); st.stop()
+        st.caption(f"Top300 rows: {len(top_df)} | cols: {list(top_df.columns)}")
+        st.caption(f"Beginner rows: {len(beg_df)} | cols: {list(beg_df.columns)}")
+
+        if top_df.empty and beg_df.empty:
+            st.error("Couldn’t extract any rows from either PDF. The table layout may not be recognized. "
+                     "Try re-uploading, or export the cheat sheet to CSV if available.")
+            st.stop()
+
+        if top_df.empty or beg_df.empty:
+            st.warning("Only one PDF parsed successfully — combining with what’s available.")  
+            
         master = merge_and_dedupe(top_df, beg_df)
         st.success(f"Parsed Top300: {len(top_df)} rows, Beginner: {len(beg_df)} rows. Combined: {len(master)} rows.")
         st.dataframe(master.head(50), use_container_width=True, hide_index=True)
