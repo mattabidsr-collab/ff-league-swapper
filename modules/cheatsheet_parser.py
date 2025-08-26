@@ -74,28 +74,49 @@ def parse_cheatsheet_pdf(path: str, assume_has_value: bool=False) -> pd.DataFram
     return df
 
 def merge_and_dedupe(top_df: pd.DataFrame, beg_df: pd.DataFrame) -> pd.DataFrame:
-    for d in (top_df, beg_df):
-        if "rank" not in d.columns: d["rank"] = None
-        if "value" not in d.columns: d["value"] = None
-        if "bye" not in d.columns: d["bye"] = None
-    top_df["source"] = "Top300"
-    beg_df["source"] = "Beginner"
-    both = pd.concat([top_df, beg_df], ignore_index=True)
-    both = both.sort_values(["name","pos","source"], ascending=[True, True, True])
+    """Auto-resolve duplicates preferring Top300 (rank/value) over Beginner.
+    Keeps one row per (name,pos). Fills missing fields from the other.
+    Robust to missing columns / empty parses.
+    """
+    # Ensure required columns exist on both dataframes
+    required = ["rank","name","team","pos","bye","value","source"]
+    for d, src in ((top_df, "Top300"), (beg_df, "Beginner")):
+        for c in required:
+            if c not in d.columns:
+                d[c] = pd.NA
+        d["source"] = src
+
+    # Drop rows with no name or no pos (parsing noise)
+    top_df = top_df.dropna(subset=["name","pos"])
+    beg_df = beg_df.dropna(subset=["name","pos"])
+
+    # If both are empty, return an empty, correctly-shaped frame
+    both = pd.concat([top_df, beg_df], ignore_index=True, sort=False)
+    cols = ["overall_rank","rank","name","team","pos","bye","value","source"]
+    if both.empty:
+        return pd.DataFrame(columns=cols)
+
+    # Sort with guards (columns now guaranteed)
+    both = both.sort_values(["name","pos","source"], ascending=[True, True, True], na_position="last")
+
     def combine(g):
         row = g.iloc[0].copy()
+        # Fill blanks from others in group
         for col in ["rank","team","bye","value"]:
             if pd.isna(row.get(col)) or row.get(col) in ("", None):
                 for _, r in g.iterrows():
                     if pd.notna(r.get(col)) and r.get(col) not in ("", None):
-                        row[col] = r.get(col); break
+                        row[col] = r.get(col)
+                        break
+        # Keep merged source string
         row["source"] = ",".join(sorted(set(g["source"])))
         return row
+
     master = both.groupby(["name","pos"], as_index=False).apply(combine).reset_index(drop=True)
     master["rank"] = pd.to_numeric(master["rank"], errors="coerce")
     master = master.sort_values(["rank","value","name"], ascending=[True, False, True], na_position="last")
-    master["overall_rank"] = range(1, len(master)+1)
-    cols = ["overall_rank","rank","name","team","pos","bye","value","source"]
+    master["overall_rank"] = range(1, len(master) + 1)
     for c in cols:
-        if c not in master.columns: master[c] = None
+        if c not in master.columns:
+            master[c] = pd.NA
     return master[cols]
