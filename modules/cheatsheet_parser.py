@@ -10,18 +10,95 @@ CLEAN_TEAM = {
     "LAR":"LAR","WAS":"WAS"
 }
 
-POS_RE = re.compile(r'\b(QB|RB|WR|TE|K|DST|D/ST)\b')
+POS_RE  = re.compile(r'\b(QB|RB|WR|TE|K|DST|D/ST)\b')
 TEAM_RE = re.compile(r'\b([A-Z]{2,3})\b')
-BYE_RE = re.compile(r'\b(?:Bye|BYE)\s*(\d{1,2})\b')
+BYE_RE  = re.compile(r'\b(?:Bye|BYE)\s*(\d{1,2})\b')
 
 def _clean_cell(x):
     if x is None: return ""
-    return str(x).strip().replace('\n', ' ')
+    return str(x).strip().replace("\n", " ")
 
 def _normalize_team(tok):
-    tok = tok.strip('.').upper()
+    tok = tok.strip(".").upper()
     return CLEAN_TEAM.get(tok, tok)
 
+# ---------------------------
+# TEXT-MODE FALLBACK PARSER
+# ---------------------------
+# Tries to match lines like:
+#  12  Bijan Robinson  ATL  RB  Bye 5  56
+#  Ja'Marr Chase  CIN  WR  Bye 10  (no value)
+LINE_RE = re.compile(
+    r"""
+    ^\s*
+    (?:(?P<rank>\d{1,3})\s+)?                         # optional rank at line start
+    (?P<name>[A-Za-z][A-Za-z\.\- '\u2019]+?)\s+       # player name (allow apostrophes/hyphens)
+    (?P<team>[A-Z]{2,3})\s+                           # NFL team code
+    (?P<pos>QB|RB|WR|TE|K|DST|D/ST)\b                 # position
+    (?:.*?\b(?:Bye|BYE)\s*(?P<bye>\d{1,2}))?          # optional Bye
+    (?:.*?\b(?P<value>\d{1,3}(?:\.\d+)?))?            # optional trailing numeric (auction/value)
+    \s*$
+    """, re.VERBOSE
+)
+
+def _parse_text_block(text: str, assume_has_value: bool=False) -> pd.DataFrame:
+    rows = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        m = LINE_RE.search(line)
+        if not m:
+            # Looser heuristic: require pos token somewhere and at least a team token
+            if POS_RE.search(line) and TEAM_RE.search(line):
+                # crude token pass
+                pos_m = POS_RE.search(line)
+                pos = pos_m.group(1).replace("D/ST","DST")
+                team = None
+                for cand in TEAM_RE.findall(line):
+                    cand2 = _normalize_team(cand)
+                    if cand2 in CLEAN_TEAM.values():
+                        team = cand2
+                # name: largest non-numeric chunk before team token
+                name = None
+                for chunk in [c.strip() for c in line.split()]:
+                    if chunk.isdigit(): continue
+                    if chunk.upper() in CLEAN_TEAM: continue
+                    if chunk.upper() in CLEAN_TEAM.values(): continue
+                    if chunk.upper() in ("QB","RB","WR","TE","K","DST","D/ST","BYE"): continue
+                    name = chunk if not name else f"{name} {chunk}"
+                if name and team:
+                    bye_m = BYE_RE.search(line)
+                    bye = int(bye_m.group(1)) if bye_m else None
+                    value = None
+                    if assume_has_value:
+                        tail_nums = re.findall(r'(\d{1,3}(?:\.\d+)?)\s*$', line)
+                        if tail_nums:
+                            try:
+                                v = float(tail_nums[-1])
+                                if 0 < v < 1000: value = v
+                            except: pass
+                    # rank (optional) at start
+                    rank = None
+                    start_num = re.match(r'^\s*(\d{1,3})\b', line)
+                    if start_num:
+                        try: rank = int(start_num.group(1))
+                        except: pass
+                    rows.append({"rank":rank,"name":name,"team":team,"pos":pos,"bye":bye,"value":value})
+            continue
+        gd = m.groupdict()
+        pos = gd["pos"].replace("D/ST","DST")
+        team = _normalize_team(gd["team"])
+        rank = int(gd["rank"]) if gd["rank"] else None
+        bye  = int(gd["bye"])  if gd["bye"]  else None
+        value = float(gd["value"]) if (assume_has_value and gd["value"]) else None
+        rows.append({"rank":rank,"name":gd["name"].strip(),"team":team,"pos":pos,"bye":bye,"value":value})
+    df = pd.DataFrame(rows).drop_duplicates(subset=["name","team","pos"])
+    return df
+
+# ---------------------------
+# TABLE PARSER (existing)
+# ---------------------------
 def parse_cheatsheet_pdf(path: str, assume_has_value: bool=False) -> pd.DataFrame:
     rows = []
     with pdfplumber.open(path) as pdf:
@@ -31,13 +108,14 @@ def parse_cheatsheet_pdf(path: str, assume_has_value: bool=False) -> pd.DataFram
             except Exception:
                 tables = []
             for tbl in tables:
-                if not tbl or len(tbl) < 3: 
+                if not tbl or len(tbl) < 3:
                     continue
                 for r in tbl:
                     cells = [_clean_cell(c) for c in r]
                     line = " | ".join(cells)
                     mpos = POS_RE.search(line)
-                    if not mpos: continue
+                    if not mpos:
+                        continue
                     rank = None
                     for c in cells:
                         if c.isdigit():
@@ -69,54 +147,12 @@ def parse_cheatsheet_pdf(path: str, assume_has_value: bool=False) -> pd.DataFram
                                         value = valf; break
                             except: pass
                     if name and pos and team:
-                        rows.append({"rank": rank,"name": name,"team": team,"pos": pos,"bye": bye,"value": value})
+                        rows.append({"rank":rank,"name":name,"team":team,"pos":pos,"bye":bye,"value":value})
     df = pd.DataFrame(rows).drop_duplicates(subset=["name","team","pos"])
+
+    # >>> FALLBACK: if table parse failed, try text parse
+    if df.empty:
+        with pdfplumber.open(path) as pdf:
+            text = "\n".join([p.extract_text() or "" for p in pdf.pages])
+        df = _parse_text_block(text, assume_has_value=assume_has_value)
     return df
-
-def merge_and_dedupe(top_df: pd.DataFrame, beg_df: pd.DataFrame) -> pd.DataFrame:
-    """Auto-resolve duplicates preferring Top300 (rank/value) over Beginner.
-    Keeps one row per (name,pos). Fills missing fields from the other.
-    Robust to missing columns / empty parses.
-    """
-    # Ensure required columns exist on both dataframes
-    required = ["rank","name","team","pos","bye","value","source"]
-    for d, src in ((top_df, "Top300"), (beg_df, "Beginner")):
-        for c in required:
-            if c not in d.columns:
-                d[c] = pd.NA
-        d["source"] = src
-
-    # Drop rows with no name or no pos (parsing noise)
-    top_df = top_df.dropna(subset=["name","pos"])
-    beg_df = beg_df.dropna(subset=["name","pos"])
-
-    # If both are empty, return an empty, correctly-shaped frame
-    both = pd.concat([top_df, beg_df], ignore_index=True, sort=False)
-    cols = ["overall_rank","rank","name","team","pos","bye","value","source"]
-    if both.empty:
-        return pd.DataFrame(columns=cols)
-
-    # Sort with guards (columns now guaranteed)
-    both = both.sort_values(["name","pos","source"], ascending=[True, True, True], na_position="last")
-
-    def combine(g):
-        row = g.iloc[0].copy()
-        # Fill blanks from others in group
-        for col in ["rank","team","bye","value"]:
-            if pd.isna(row.get(col)) or row.get(col) in ("", None):
-                for _, r in g.iterrows():
-                    if pd.notna(r.get(col)) and r.get(col) not in ("", None):
-                        row[col] = r.get(col)
-                        break
-        # Keep merged source string
-        row["source"] = ",".join(sorted(set(g["source"])))
-        return row
-
-    master = both.groupby(["name","pos"], as_index=False).apply(combine).reset_index(drop=True)
-    master["rank"] = pd.to_numeric(master["rank"], errors="coerce")
-    master = master.sort_values(["rank","value","name"], ascending=[True, False, True], na_position="last")
-    master["overall_rank"] = range(1, len(master) + 1)
-    for c in cols:
-        if c not in master.columns:
-            master[c] = pd.NA
-    return master[cols]
