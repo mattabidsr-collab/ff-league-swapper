@@ -166,7 +166,12 @@ with tab_draft:
         use_container_width=True, hide_index=True, height=260
     )
 
-    rem = st.multiselect("Remove drafted entries", options=drafted_df["player"].astype(str).tolist(), key="rem_drafted")
+        rem = st.multiselect(
+        "Remove drafted entries",
+        options=drafted_df["player"].astype(str).tolist(),
+        key="rem_drafted"
+    )
+
     col_a, col_b, col_c = st.columns([1,1,1])
     with col_a:
         if st.button("Remove selected"):
@@ -180,9 +185,21 @@ with tab_draft:
         # Export drafted list
         if not drafted_df.empty:
             st.download_button(
-                "Download drafted.csv",
-                drafted_df[["player","pos","team"]].to_csv(index=False),
+                label="Download drafted.csv",
+                data=drafted_df[["player","pos","team"]].to_csv(index=False),
                 file_name="drafted.csv",
+                mime="text/csv"
+            )
+
+    # Also let user export Best Available
+    if not pool.empty:
+        st.download_button(
+            label="Download best_available.csv",
+            data=pool[["player","pos","team"] + ([sort_by] if sort_by else [])].to_csv(index=False),
+            file_name="best_available.csv",
+            mime="text/csv"
+        )
+
 
 
 # ---------- Waiver Wire ----------
