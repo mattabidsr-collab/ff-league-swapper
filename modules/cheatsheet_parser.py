@@ -1,7 +1,6 @@
 import pdfplumber
 import pandas as pd
 import re
-from modules.cheatsheet_parser import parse_cheatsheet_pdf, merge_and_dedupe
 
 CLEAN_TEAM = {
     "JAX":"JAC", "JAX.":"JAC", "WSH":"WAS", "LA":"LAR", "LAC":"LAC", "LV":"LV", "SF":"SF", "TB":"TB",
