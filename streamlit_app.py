@@ -137,6 +137,172 @@ with tab_draft:
     # --- Draft controls ---
     st.markdown("### Mark players as drafted")
     c1, c2 = st.columns([2,1])
+    
+        # ---------- Smart Scoring Controls ----------
+    st.markdown("### Draft Scoring Weights")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        w_proj = st.slider("Weight: Projections/Rank", 0.0, 2.0, 1.0, 0.05)
+        w_need = st.slider("Weight: Roster Need", 0.0, 2.0, 0.8, 0.05)
+    with c2:
+        w_scar = st.slider("Weight: Positional Scarcity", 0.0, 2.0, 0.6, 0.05)
+        w_tier = st.slider("Weight: Tier", 0.0, 2.0, 0.6, 0.05)
+    with c3:
+        w_bye  = st.slider("Penalty: Bye Cluster", 0.0, 2.0, 0.3, 0.05)
+        w_stack= st.slider("Bonus: Stacking", 0.0, 2.0, 0.4, 0.05)
+
+    # ------------- Helpers -------------
+    def _pos_list():
+        return ["QB","RB","WR","TE","DST","K","FLEX"]
+
+    # current drafted players (by you) — we know their pos/team/bye from all_df
+    drafted_df = all_df[all_df["player"].astype(str).isin(st.session_state.drafted_set)].copy()
+
+    # roster needs from RULES
+    slots = {p: int(RULES.roster_slots.get(p, 0)) for p in _pos_list()}
+    flex_elig = set(RULES.flex_eligible)
+
+    # count how many you’ve drafted at each slot and flex-eligible pool
+    drafted_counts = drafted_df["pos"].value_counts().to_dict()
+
+    # bye clusters on your current roster (including drafted so far)
+    my_bye = drafted_df.groupby(["pos","bye"]).size().reset_index(name="count") if "bye" in drafted_df.columns else pd.DataFrame(columns=["pos","bye","count"])
+
+    # baseline “projection” source
+    # prefer proj_points; else invert rank; else neutral
+    import numpy as np
+    base = all_df.copy()
+    if "proj_points" in base.columns and base["proj_points"].notna().any():
+        base["proj_norm"] = (base["proj_points"] - base["proj_points"].min()) / (base["proj_points"].max() - base["proj_points"].min() + 1e-9)
+    elif "rank" in base.columns and base["rank"].notna().any():
+        # smaller rank is better → convert to 0..1 (1 = best)
+        mx = base["rank"].max()
+        base["proj_norm"] = 1.0 - (base["rank"] / (mx + 1e-9))
+    else:
+        base["proj_norm"] = 0.5  # flat if you provided neither
+
+    # auto-tier if no `tier`
+    if "tier" not in base.columns:
+        if "rank" in base.columns and base["rank"].notna().any():
+            # simple breakpoints: 1-12, 13-36, 37-72, 73-120, 121+
+            bins = [0, 12, 36, 72, 120, 9999]
+            labels = [1,2,3,4,5]
+            base["tier"] = pd.cut(base["rank"].fillna(9999), bins=bins, labels=labels).astype("Int64")
+        else:
+            base["tier"] = pd.Series([3]*len(base), dtype="Int64")
+
+    # scarcity per position: how many remain and the drop-off nearby
+    def scarcity_score(df: pd.DataFrame):
+        scores = []
+        for pos, group in df.groupby("pos"):
+            g = group.sort_values(["proj_norm"], ascending=False).reset_index(drop=True)
+            total = len(g)
+            # remaining (exclude already drafted)
+            remaining = g[~g["player"].astype(str).isin(st.session_state.drafted_set)]
+            rem = len(remaining)
+            # positional scarcity = fewer remaining → higher scarcity
+            sc_base = 1.0 - (rem / (total + 1e-9))
+            # drop-off: difference between this player’s proj and the Nth after
+            idx_map = {p:i for i,p in enumerate(g["player"])}
+            for _, row in g.iterrows():
+                i = idx_map[row["player"]]
+                j = min(i+5, len(g)-1)  # look 5 picks ahead in same position
+                drop = float(row["proj_norm"] - g.iloc[j]["proj_norm"]) if len(g) > 1 else 0.0
+                scores.append((row["player"], max(0.0, sc_base*0.5 + drop*0.5)))
+        return dict(scores)
+
+    scar_map = scarcity_score(base)
+
+    # roster-need score:
+    # If you still need starters at that pos → big boost.
+    # If starters filled but FLEX exists and pos is flex-eligible → smaller boost.
+    def need_score(pos: str):
+        cur = drafted_counts.get(pos, 0)
+        need = slots.get(pos, 0)
+        if cur < need:
+            # need ratio: how far from filling
+            return 1.0 if need == 0 else (1.0 - (cur / max(1, need)))
+        # FLEX consideration
+        if pos in flex_elig and slots.get("FLEX", 0) > 0:
+            # count how many flex-eligible drafted vs total flex slots
+            drafted_flex = drafted_df[drafted_df["pos"].isin(flex_elig)].shape[0]
+            flex_need_left = max(0, slots["FLEX"] - drafted_flex)
+            return 0.5 if flex_need_left > 0 else 0.0
+        return 0.0
+
+    # bye-week penalty: more players on same pos+bye → bigger penalty
+    def bye_penalty(pos: str, bye):
+        if bye is None or pd.isna(bye) or my_bye.empty:
+            return 0.0
+        hit = my_bye[(my_bye["pos"]==pos) & (my_bye["bye"]==bye)]
+        if hit.empty: return 0.0
+        # 1 player already on that bye at that pos → small penalty; 2+ → bigger
+        c = int(hit["count"].iloc[0])
+        return min(1.0, 0.3*c)
+
+    # stacking bonus: QB with your WR/TE, or WR/TE with your QB, same team
+    my_qb_teams = set(drafted_df.loc[drafted_df["pos"]=="QB","team"]) if "team" in drafted_df.columns else set()
+    my_passcatcher_teams = set(drafted_df.loc[drafted_df["pos"].isin(["WR","TE"]),"team"]) if "team" in drafted_df.columns else set()
+    def stack_bonus(pos: str, team: str):
+        if team is None or pd.isna(team): return 0.0
+        team = str(team)
+        if pos=="QB" and team in my_passcatcher_teams: return 1.0
+        if pos in ["WR","TE"] and team in my_qb_teams: return 0.7
+        return 0.0
+
+    # league-scoring nudge (tiny bias)
+    def scoring_bias(pos: str):
+        bias = 0.0
+        # More PPR → bump WR/RB/TE a hair
+        if RULES.ppr >= 1.0 and pos in ["WR","RB","TE"]:
+            bias += 0.05
+        # 6-pt pass TD → bump QB a hair
+        if RULES.pass_td >= 6 and pos=="QB":
+            bias += 0.05
+        return bias
+
+    # Build candidate pool (exclude drafted, filter by pos_choice)
+    drafted_names = st.session_state.drafted_set
+    pool = base[~base["player"].astype(str).isin(drafted_names)].copy()
+    if pos_choice != "ALL":
+        pool = pool[pool["pos"].astype(str) == pos_choice]
+
+    # Final score = weighted sum
+    def row_score(r):
+        pos = str(r.get("pos",""))
+        team = r.get("team", None)
+        bye  = r.get("bye", None)
+        proj = float(r.get("proj_norm", 0.5))
+        need = need_score(pos)
+        scar = scar_map.get(r["player"], 0.0)
+        tier = r.get("tier", pd.NA)
+        tier_bonus = 0.0 if pd.isna(tier) else (1.0 - (int(tier)-1)/5.0)  # tier 1→1.0, tier 5→0.2
+        bye_pen = bye_penalty(pos, bye)
+        stack_b = stack_bonus(pos, team)
+        score = (
+            w_proj*proj +
+            w_need*need +
+            w_scar*scar +
+            w_tier*tier_bonus +
+            w_stack*stack_b -
+            w_bye*bye_pen +
+            scoring_bias(pos)
+        )
+        return float(score)
+
+    pool["draft_score"] = pool.apply(row_score, axis=1)
+
+    # Show Best Available by draft_score
+    st.markdown("**Best Available (Smart Score)**")
+    show_cols = ["player","pos","team","draft_score"]
+    if "proj_points" in pool.columns: show_cols.insert(3, "proj_points")
+    elif "rank" in pool.columns: show_cols.insert(3, "rank")
+    if "bye" in pool.columns: show_cols.append("bye")
+
+    st.dataframe(
+        pool.sort_values("draft_score", ascending=False).head(50)[show_cols],
+        use_container_width=True, hide_index=True
+    )
 
     # Quick pick: search & add
     with c1:
