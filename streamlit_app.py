@@ -149,14 +149,14 @@ with tab_draft:
         if st.button("Add selected to drafted"):
             to_add = pool[pool["key"].isin(add_multi)]["player"].astype(str).tolist()
             st.session_state.drafted_set.update(to_add)
-            st.experimental_rerun()
+            st.rerun()
 
     with c2:
         manual_name = st.text_input("Manual add (exact player name)")
         if st.button("Add manual"):
             if manual_name.strip():
                 st.session_state.drafted_set.add(manual_name.strip())
-                st.experimental_rerun()
+                st.rerun()
 
     # Remove drafted
     drafted_df = all_df[all_df["player"].astype(str).isin(st.session_state.drafted_set)].copy()
@@ -176,11 +176,11 @@ with tab_draft:
     with col_a:
         if st.button("Remove selected"):
             st.session_state.drafted_set.difference_update(rem)
-            st.experimental_rerun()
+            st.rerun()
     with col_b:
         if st.button("Reset drafted list"):
             st.session_state.drafted_set = set()
-            st.experimental_rerun()
+            st.rerun()
     with col_c:
         # Export drafted list
         if not drafted_df.empty:
